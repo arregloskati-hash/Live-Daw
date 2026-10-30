@@ -269,16 +269,20 @@ struct MeterSub {
 const TRANSPORT_PENDING: u8 = 0;
 const TRANSPORT_NATIVE: u8 = 1;
 const TRANSPORT_WEBSOCKET: u8 = 2;
-/// A connection that sends nothing for this long after connecting is a
-/// Native client (one that listens first); WING-Q's upgrade request comes
-/// right after the connection.
-const TRANSPORT_GRACE: Duration = Duration::from_millis(250);
+/// A connection that sends nothing at all for this long after connecting is
+/// a Native client (one that listens first); WING-Q's upgrade request comes
+/// right after the connection. Generous, as a busy or slow machine (and
+/// ThreadSanitizer) may take a while to read the request; a client that
+/// speaks first is told apart at once.
+const TRANSPORT_GRACE: Duration = Duration::from_secs(1);
 
 struct NativeClient {
     id: u64,
     /// TRANSPORT_*: nothing is written while it's pending; over a WebSocket
     /// the queue holds whole frames.
     transport: AtomicU8,
+    /// The reader has received bytes (the transport is then its call).
+    got_bytes: AtomicBool,
     peer: SocketAddr,
     /// For shutting the connection down from any thread.
     stream: TcpStream,
@@ -1008,6 +1012,7 @@ fn native_loop(sh: &Arc<Shared>, listener: TcpListener) {
                 let client = Arc::new(NativeClient {
                     id: sh.next_id.fetch_add(1, Ordering::Relaxed),
                     transport: AtomicU8::new(TRANSPORT_PENDING),
+                    got_bytes: AtomicBool::new(false),
                     peer,
                     stream: control,
                     out: Mutex::default(),
@@ -1052,7 +1057,7 @@ fn writer_loop(sh: &Shared, client: &NativeClient, mut stream: TcpStream) {
             // at first is a Native one: WING-Q's request comes at once.
             loop {
                 let mut pending = client.transport.load(Ordering::Relaxed) == TRANSPORT_PENDING;
-                if pending && client.since.elapsed() >= TRANSPORT_GRACE {
+                if pending && !client.got_bytes.load(Ordering::Relaxed) && client.since.elapsed() >= TRANSPORT_GRACE {
                     // Under the queue's lock, as set_transport.
                     client.transport.store(TRANSPORT_NATIVE, Ordering::Relaxed);
                     pending = false;
@@ -1133,6 +1138,7 @@ fn client_loop(sh: &Shared, client: Arc<NativeClient>, mut stream: TcpStream) {
             ReadOutcome::Again => std::thread::sleep(READ_POLL),
             ReadOutcome::Data(n) => {
                 client.heard_now();
+                client.got_bytes.store(true, Ordering::Relaxed);
                 sh.native_bytes.fetch_add(n as u64, Ordering::Relaxed);
                 let data = &buf[..n];
                 match client.transport.load(Ordering::Relaxed) {
@@ -1346,6 +1352,7 @@ mod tests {
     fn native_client(stream: TcpStream) -> NativeClient {
         NativeClient {
             transport: AtomicU8::new(TRANSPORT_NATIVE),
+            got_bytes: AtomicBool::new(true),
             id: 1,
             peer: stream.peer_addr().unwrap(),
             stream,

@@ -367,7 +367,7 @@ fn a_native_client_that_listens_first_still_gets_changes() {
     // Registered (the server knows it once the grace for a WebSocket's
     // request is over), then a UI change reaches it.
     wait_until("registered", || server.status().clients.len() == 1);
-    std::thread::sleep(Duration::from_millis(400));
+    std::thread::sleep(Duration::from_millis(1300));
     let ch4 = id("/ch/4/fdr");
     e.strip_at(StripKind::Channel, 3).unwrap().params.fader_db.store(-9.0);
     n.wait_for("the change", |d| contains(d, &ch4.to_be_bytes()));
@@ -437,7 +437,12 @@ fn a_broken_websocket_client_only_closes_itself() {
 #[test]
 fn stress_wingq_clients_with_native_ones_and_churn() {
     // Shorter under ThreadSanitizer (CI), which is several times slower.
-    let default_secs = if std::env::var_os("TSAN_OPTIONS").is_some() { 8 } else { 20 };
+    // ThreadSanitizer (CI) runs everything several times slower: a shorter
+    // run, and clients that send at a pace it can serve (else the server
+    // rightly drops clients that can't keep up with what it sends them).
+    let tsan = std::env::var_os("TSAN_OPTIONS").is_some();
+    let default_secs = if tsan { 8 } else { 20 };
+    let pace: u64 = if tsan { 20 } else { 1 };
     let secs: u64 = std::env::var("WINGQ_STRESS_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(default_secs);
     let (e, server) = start("WINGQ-STRESS");
     let addr = server.status().native.unwrap();
@@ -494,7 +499,7 @@ fn stress_wingq_clients_with_native_ones_and_churn() {
                     }
                     q.data.clear();
                 }
-                std::thread::sleep(Duration::from_micros(500 + q.rng.below(1500)));
+                std::thread::sleep(Duration::from_micros((500 + q.rng.below(1500)) * pace));
             }
             // Keep reading until the last move is applied: under this load
             // the server reads a client's requests only while less than
@@ -502,6 +507,7 @@ fn stress_wingq_clients_with_native_ones_and_churn() {
             // leaving at once could drop requests still in the socket.
             let until = Instant::now() + PATIENCE;
             while (fader(&e, k) - last).abs() >= 0.01 && Instant::now() < until {
+                assert!(!q.closed, "WING-Q client {k} was closed before its last move arrived");
                 q.pump();
                 q.data.clear();
             }
@@ -511,7 +517,7 @@ fn stress_wingq_clients_with_native_ones_and_churn() {
     // WING Edit-like clients moving channels 21-23 and reading everything.
     let mut natives = Vec::new();
     for k in 0..NATIVES {
-        let (stop, sets) = (stop.clone(), sets.clone());
+        let (stop, sets, e) = (stop.clone(), sets.clone(), e.clone());
         natives.push(std::thread::spawn(move || {
             let mut n = Native::connect(addr, true);
             let my = id(&format!("/ch/{}/fdr", 21 + k));
@@ -526,7 +532,13 @@ fn stress_wingq_clients_with_native_ones_and_churn() {
                 if n.data.len() > 1 << 20 {
                     n.data.clear();
                 }
-                std::thread::sleep(Duration::from_millis(2));
+                std::thread::sleep(Duration::from_millis(2 * pace));
+            }
+            // As the WING-Q clients: stay until the last move is applied.
+            let until = Instant::now() + PATIENCE;
+            while (fader(&e, 20 + k) - last).abs() >= 0.01 && Instant::now() < until {
+                n.pump();
+                n.data.clear();
             }
             (20 + k, last)
         }));
@@ -583,7 +595,7 @@ fn stress_wingq_clients_with_native_ones_and_churn() {
                     }
                 }
                 churned.fetch_add(1, Relaxed);
-                std::thread::sleep(Duration::from_millis(5));
+                std::thread::sleep(Duration::from_millis(5 * pace));
             }
         })
     };
