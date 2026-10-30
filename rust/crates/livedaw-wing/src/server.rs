@@ -1,5 +1,6 @@
 //! The remote servers: discovery (UDP 2222), OSC (UDP 2223) and the Native
-//! protocol (TCP 2222, meters over UDP), each on its own std::net thread, plus
+//! protocol (TCP 2222, meters over UDP; also over a WebSocket on the same
+//! port, as WING-Q connects: see `websocket`), each on its own std::net thread, plus
 //! a poller that pushes changes (from any source: the UI, scene recalls, other
 //! clients) to the OSC subscriber and the Native clients, and sends meters.
 //!
@@ -12,11 +13,12 @@ use crate::native::{self, MeterRequest, Session};
 use crate::osc::{self, Arg, Effect, Message, SubFormat};
 use crate::schema::{schema, ModelSource, Node};
 use crate::value::Value;
+use crate::websocket::{self, Sniff};
 use livedaw_engine::Engine;
 use std::collections::{HashMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -176,6 +178,9 @@ pub enum CloseReason {
     QueueFull,
     /// The server stopped.
     Stopped,
+    /// Not a WING client: an HTTP request that isn't a WebSocket upgrade, or
+    /// a WebSocket protocol error.
+    Protocol(String),
 }
 
 impl std::fmt::Display for CloseReason {
@@ -188,6 +193,7 @@ impl std::fmt::Display for CloseReason {
             CloseReason::WriteError(k, e) => write!(f, "write error ({k:?}): {e}"),
             CloseReason::QueueFull => write!(f, "more than {} MB waited for the client", NATIVE_MAX_QUEUED >> 20),
             CloseReason::Stopped => write!(f, "the server stopped"),
+            CloseReason::Protocol(e) => write!(f, "protocol error: {e}"),
         }
     }
 }
@@ -259,8 +265,20 @@ struct MeterSub {
     expires: Instant,
 }
 
+/// A Native connection's transport, known from its first bytes.
+const TRANSPORT_PENDING: u8 = 0;
+const TRANSPORT_NATIVE: u8 = 1;
+const TRANSPORT_WEBSOCKET: u8 = 2;
+/// A connection that sends nothing for this long after connecting is a
+/// Native client (one that listens first); WING-Q's upgrade request comes
+/// right after the connection.
+const TRANSPORT_GRACE: Duration = Duration::from_millis(250);
+
 struct NativeClient {
     id: u64,
+    /// TRANSPORT_*: nothing is written while it's pending; over a WebSocket
+    /// the queue holds whole frames.
+    transport: AtomicU8,
     peer: SocketAddr,
     /// For shutting the connection down from any thread.
     stream: TcpStream,
@@ -286,13 +304,52 @@ impl NativeClient {
             return;
         }
         let mut out = lock(&self.out);
-        if out.len() + bytes.len() > NATIVE_MAX_QUEUED {
+        // Read under the queue's lock, where the transport changes.
+        let ws = self.transport.load(Ordering::Relaxed) == TRANSPORT_WEBSOCKET;
+        let framing = if ws { 10 * (bytes.len() / websocket::MAX_FRAME_PAYLOAD + 1) } else { 0 };
+        if out.len() + bytes.len() + framing > NATIVE_MAX_QUEUED {
             drop(out);
             self.close(CloseReason::QueueFull);
             return;
         }
-        out.extend_from_slice(bytes);
+        if ws {
+            websocket::encode_binary(bytes, &mut out);
+        } else {
+            out.extend_from_slice(bytes);
+        }
         self.ready.notify_one();
+    }
+
+    /// Queues a WebSocket control frame (a pong).
+    fn send_frame(&self, frame: &[u8]) {
+        if self.alive.load(Ordering::Relaxed) {
+            lock(&self.out).extend_from_slice(frame);
+            self.ready.notify_one();
+        }
+    }
+
+    /// The transport is known: the plain Native protocol, or a WebSocket
+    /// (`Some` with the handshake's response). What was queued meanwhile
+    /// (changes broadcast while the request arrived) follows the response,
+    /// framed.
+    ///
+    /// False if it was decided already (the writer took a silent client for
+    /// a Native one, see TRANSPORT_GRACE): the bytes are then Native ones.
+    fn set_transport(&self, websocket_response: Option<Vec<u8>>) -> bool {
+        let mut out = lock(&self.out);
+        if self.transport.load(Ordering::Relaxed) != TRANSPORT_PENDING {
+            return false;
+        }
+        match websocket_response {
+            Some(mut response) => {
+                websocket::encode_binary(&out, &mut response);
+                *out = response;
+                self.transport.store(TRANSPORT_WEBSOCKET, Ordering::Relaxed);
+            }
+            None => self.transport.store(TRANSPORT_NATIVE, Ordering::Relaxed),
+        }
+        self.ready.notify_one();
+        true
     }
 
     fn queued(&self) -> usize {
@@ -950,6 +1007,7 @@ fn native_loop(sh: &Arc<Shared>, listener: TcpListener) {
                 }
                 let client = Arc::new(NativeClient {
                     id: sh.next_id.fetch_add(1, Ordering::Relaxed),
+                    transport: AtomicU8::new(TRANSPORT_PENDING),
                     peer,
                     stream: control,
                     out: Mutex::default(),
@@ -989,8 +1047,25 @@ fn writer_loop(sh: &Shared, client: &NativeClient, mut stream: TcpStream) {
     loop {
         {
             let mut out = lock(&client.out);
-            while out.is_empty() && client.alive.load(Ordering::Relaxed) && !sh.stop.load(Ordering::Relaxed) {
-                out = client.ready.wait_timeout(out, TICK).unwrap_or_else(|e| e.into_inner()).0;
+            // Nothing goes out before the transport is known (a WebSocket's
+            // handshake response comes first). A client that sends nothing
+            // at first is a Native one: WING-Q's request comes at once.
+            loop {
+                let mut pending = client.transport.load(Ordering::Relaxed) == TRANSPORT_PENDING;
+                if pending && client.since.elapsed() >= TRANSPORT_GRACE {
+                    // Under the queue's lock, as set_transport.
+                    client.transport.store(TRANSPORT_NATIVE, Ordering::Relaxed);
+                    pending = false;
+                }
+                if !((out.is_empty() || pending) && client.alive.load(Ordering::Relaxed) && !sh.stop.load(Ordering::Relaxed)) {
+                    break;
+                }
+                let wait = if pending {
+                    TRANSPORT_GRACE.saturating_sub(client.since.elapsed()).max(Duration::from_millis(1)).min(TICK)
+                } else {
+                    TICK
+                };
+                out = client.ready.wait_timeout(out, wait).unwrap_or_else(|e| e.into_inner()).0;
             }
             if !client.alive.load(Ordering::Relaxed) || sh.stop.load(Ordering::Relaxed) {
                 return;
@@ -1036,6 +1111,10 @@ fn writer_loop(sh: &Shared, client: &NativeClient, mut stream: TcpStream) {
 fn client_loop(sh: &Shared, client: Arc<NativeClient>, mut stream: TcpStream) {
     let mut session = Session::new(Origin::Native(client.id));
     let mut buf = vec![0u8; 16384];
+    // The first bytes, until they tell the transport apart.
+    let mut head: Vec<u8> = Vec::new();
+    let mut ws = websocket::Decoder::default();
+    let mut events = Vec::new();
     client.heard_now();
     while !sh.stop.load(Ordering::Relaxed) && client.alive.load(Ordering::Relaxed) {
         if client.queued() > NATIVE_READ_PAUSE {
@@ -1055,24 +1134,52 @@ fn client_loop(sh: &Shared, client: Arc<NativeClient>, mut stream: TcpStream) {
             ReadOutcome::Data(n) => {
                 client.heard_now();
                 sh.native_bytes.fetch_add(n as u64, Ordering::Relaxed);
-                session.feed(sh, &buf[..n]);
-                if !session.out.is_empty() {
-                    let payload = std::mem::take(&mut session.out);
-                    client.send(&native::frame(native::CH_AUDIO, &payload));
-                }
-                for req in session.meter_requests.drain(..) {
-                    let mut m = lock(&client.meters);
-                    match req {
-                        MeterRequest::Port(p) => m.port = Some(p),
-                        MeterRequest::Subscribe { report_id, meters } => {
-                            m.report_id = report_id;
-                            m.meters = meters;
-                            m.expires = Instant::now() + METER_LIFE;
+                let data = &buf[..n];
+                match client.transport.load(Ordering::Relaxed) {
+                    TRANSPORT_NATIVE => feed_native(sh, &client, &mut session, data),
+                    TRANSPORT_WEBSOCKET => {
+                        ws.push(data, &mut events);
+                        if !websocket_events(sh, &client, &mut session, &mut events) {
+                            break;
                         }
-                        MeterRequest::Renew { report_id } => {
-                            if m.report_id == report_id {
-                                m.expires = Instant::now() + METER_LIFE;
+                    }
+                    _ => {
+                        head.extend_from_slice(data);
+                        match websocket::sniff(&head) {
+                            Sniff::NeedMore => {}
+                            Sniff::Native => {
+                                client.set_transport(None);
+                                let bytes = std::mem::take(&mut head);
+                                feed_native(sh, &client, &mut session, &bytes);
                             }
+                            // Taken for a Native client meanwhile: so be it.
+                            _ if client.transport.load(Ordering::Relaxed) == TRANSPORT_NATIVE => {
+                                let bytes = std::mem::take(&mut head);
+                                feed_native(sh, &client, &mut session, &bytes);
+                            }
+                            Sniff::TooLong => {
+                                reject(&client, &mut stream, b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                                break;
+                            }
+                            Sniff::Http(len) => match websocket::handshake(&head[..len]) {
+                                Ok(response) => {
+                                    if client.set_transport(Some(response)) {
+                                        // Frames sent right behind the request.
+                                        ws.push(&head[len..], &mut events);
+                                        head = Vec::new();
+                                        if !websocket_events(sh, &client, &mut session, &mut events) {
+                                            break;
+                                        }
+                                    } else {
+                                        let bytes = std::mem::take(&mut head);
+                                        feed_native(sh, &client, &mut session, &bytes);
+                                    }
+                                }
+                                Err(response) => {
+                                    reject(&client, &mut stream, &response);
+                                    break;
+                                }
+                            },
                         }
                     }
                 }
@@ -1081,6 +1188,65 @@ fn client_loop(sh: &Shared, client: Arc<NativeClient>, mut stream: TcpStream) {
     }
     client.close(CloseReason::Stopped);
     sh.forget(&client);
+}
+
+/// Answers an HTTP request that isn't a WING client's and closes.
+fn reject(client: &NativeClient, stream: &mut TcpStream, response: &[u8]) {
+    // Nothing else was written (the transport is still pending).
+    let _ = stream.write_all(response);
+    let _ = stream.flush();
+    let status = String::from_utf8_lossy(response).lines().next().unwrap_or_default().to_owned();
+    client.close(CloseReason::Protocol(format!("HTTP request answered {status}")));
+}
+
+/// Handles a WebSocket client's frames; false when the connection ends.
+fn websocket_events(sh: &Shared, client: &NativeClient, session: &mut Session, events: &mut Vec<websocket::Event>) -> bool {
+    for e in events.drain(..) {
+        match e {
+            websocket::Event::Data(bytes) => feed_native(sh, client, session, &bytes),
+            websocket::Event::Ping(p) => client.send_frame(&websocket::control_frame(livedaw_web::ws::Opcode::Pong, &p)),
+            websocket::Event::Close => {
+                client.send_frame(&websocket::control_frame(livedaw_web::ws::Opcode::Close, &[]));
+                // Let the writer send the close frame before the shutdown.
+                let until = Instant::now() + Duration::from_millis(200);
+                while client.queued() > 0 && Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                client.close(CloseReason::ClientClosed);
+                return false;
+            }
+            websocket::Event::Error(why) => {
+                client.close(CloseReason::Protocol(format!("WebSocket: {why}")));
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Native protocol bytes from a client (over TCP or a WebSocket).
+fn feed_native(sh: &Shared, client: &NativeClient, session: &mut Session, bytes: &[u8]) {
+    session.feed(sh, bytes);
+    if !session.out.is_empty() {
+        let payload = std::mem::take(&mut session.out);
+        client.send(&native::frame(native::CH_AUDIO, &payload));
+    }
+    for req in session.meter_requests.drain(..) {
+        let mut m = lock(&client.meters);
+        match req {
+            MeterRequest::Port(p) => m.port = Some(p),
+            MeterRequest::Subscribe { report_id, meters } => {
+                m.report_id = report_id;
+                m.meters = meters;
+                m.expires = Instant::now() + METER_LIFE;
+            }
+            MeterRequest::Renew { report_id } => {
+                if m.report_id == report_id {
+                    m.expires = Instant::now() + METER_LIFE;
+                }
+            }
+        }
+    }
 }
 
 fn poll_loop(sh: &Shared) {
@@ -1179,6 +1345,7 @@ mod tests {
 
     fn native_client(stream: TcpStream) -> NativeClient {
         NativeClient {
+            transport: AtomicU8::new(TRANSPORT_NATIVE),
             id: 1,
             peer: stream.peer_addr().unwrap(),
             stream,

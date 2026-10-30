@@ -965,6 +965,10 @@ and open-source projects (see below), and it is **experimental**.
   console, Sidecar keeps a float set over OSC or the Native protocol (or from a
   snapshot) on the nearest of the parameter's steps, so a Q of 1.00 reads back
   0.9979702 and 100 Hz on the TAP EQ 99.68543.
+- **WING-Q** (Behringer's personal monitoring app) opens a WebSocket on TCP 2222
+  (`GET /` with `Upgrade: websocket`) and sends the native protocol in binary
+  messages; Sidecar answers the upgrade and the same requests over it, so WING-Q
+  connects and works as with a console (meters still go over UDP, as it asks).
 - **Native protocol** (TCP 2222): node definitions and data, set/get by id, navigation,
   change notifications to every connected client, and meters over UDP: a frame every
   50 ms, as the console, with the levels as Sidecar's meters show them (the full peak

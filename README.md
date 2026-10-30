@@ -179,7 +179,8 @@ for the files of each version.
    Edit 3.3.4 (connect, MIXER -> PC and PC -> MIXER sync on both console models, live
    control both ways, FX and channel processing models, inserts), libwing's clients
    and the Bitfocus Companion WING module's OSC paths; testers use Mixing Station.
-   WING Copilot has not been tried.
+   WING-Q (personal monitoring) connects too: it speaks the native protocol over a
+   WebSocket on TCP 2222, which Sidecar answers. WING Copilot has not been tried.
 
 ## Keyboard shortcuts
 

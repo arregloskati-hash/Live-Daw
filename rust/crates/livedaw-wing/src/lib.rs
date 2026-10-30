@@ -7,7 +7,8 @@
 //!   values (`data/wing_factory.tsv`) and keep what clients set.
 //! * [`host`]: the application's settings that are WING parameters.
 //! * Remote servers that answer like a WING: discovery (UDP 2222), OSC (UDP
-//!   2223) and the Native protocol (TCP 2222, meters over UDP).
+//!   2223) and the Native protocol (TCP 2222, meters over UDP; WING-Q's
+//!   WebSocket on the same port carries it too: [`websocket`]).
 //! * WING snapshot (.snap) and show (.show) files.
 //!
 //! Clean-room: built from the public protocol document (Patrick-Gilles
@@ -26,6 +27,7 @@ pub mod snap;
 pub mod surface;
 pub mod sysex;
 pub mod value;
+pub mod websocket;
 
 pub use map::{Console, Identity, SetError, WingState};
 pub use schema::{schema, Node};

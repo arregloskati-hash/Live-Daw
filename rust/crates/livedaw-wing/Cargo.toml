@@ -10,6 +10,8 @@ rust-version.workspace = true
 livedaw-dsp = { path = "../livedaw-dsp" }
 livedaw-engine = { path = "../livedaw-engine" }
 livedaw-session = { path = "../livedaw-session" }
+# The WebSocket handshake key and frame header (WING-Q, see src/websocket.rs).
+livedaw-web = { path = "../livedaw-web" }
 
 # The settings parser and the render path have unit tests (run by `cargo test`).
 [[example]]
