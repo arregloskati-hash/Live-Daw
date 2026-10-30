@@ -5,6 +5,21 @@ All notable changes to Sidecar are listed here. Versions follow
 
 ## [Unreleased]
 
+## [0.1.7] - beta
+
+Skati's edition (fork arregloskati-hash/Live-Daw): a matte black look and WING-Q.
+
+### Added
+
+- **APPEARANCE** (SETUP > GENERAL > CONSOLE): WHITE (the silver WING), DARK (a matte
+  black surface with charcoal decks, grey keys and white fader caps, the new default)
+  or BK (the black WING BK's backlit keys). The COMPACT can show DARK too.
+- **WING-Q connects**: Behringer's personal monitoring app opens a WebSocket on the
+  Native port (TCP 2222) and sends the Native protocol in binary messages; Sidecar
+  answers the upgrade and serves it as any Native client (it reported "IP address is
+  not reachable" before). Other HTTP requests get a 4xx; WebSocket protocol errors
+  close only that client. Tests include a stress test (`tests/wingq.rs`).
+
 ## [0.1.6] - beta
 
 The fourth round of matching Sidecar to a real WING, cross-checked against WING Edit
