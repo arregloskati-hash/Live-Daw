@@ -325,7 +325,7 @@ public:
             o.applicationName = "looktest";
             {
                 juce::PropertiesFile props (file.getFile(), o);
-                expect (ui::ConsoleLook::load (props).finish == ui::SurfaceFinish::Silver); // the default
+                expect (ui::ConsoleLook::load (props).finish == ui::SurfaceFinish::Matte); // the default (DARK)
                 ui::ConsoleLook look;
                 look.finish = ui::SurfaceFinish::Black;
                 look.save (props);
@@ -333,8 +333,10 @@ public:
             }
             juce::PropertiesFile reopened (file.getFile(), o);
             expect (ui::ConsoleLook::load (reopened).finish == ui::SurfaceFinish::Black);
-            reopened.setValue (ui::ConsoleLook::finishKey, "GOLD"); // unknown: silver
+            reopened.setValue (ui::ConsoleLook::finishKey, "SILVER");
             expect (ui::ConsoleLook::load (reopened).finish == ui::SurfaceFinish::Silver);
+            reopened.setValue (ui::ConsoleLook::finishKey, "GOLD"); // unknown: the default, matte
+            expect (ui::ConsoleLook::load (reopened).finish == ui::SurfaceFinish::Matte);
         }
 
         beginTest ("The console model persists in the app settings; the COMPACT is black");
@@ -346,7 +348,8 @@ public:
                 juce::PropertiesFile props (file.getFile(), o);
                 auto look = ui::ConsoleLook::load (props);
                 expect (look.model == ConsoleModel::Full); // the default
-                expect (look.shownFinish() == ui::SurfaceFinish::Silver);
+                expect (look.shownFinish() == ui::SurfaceFinish::Matte);
+                look.finish = ui::SurfaceFinish::Silver;
                 look.model = ConsoleModel::Compact;
                 look.save (props);
                 expectEquals (props.getValue (ui::ConsoleLook::modelKey), juce::String ("COMPACT"));

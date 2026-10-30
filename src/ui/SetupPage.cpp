@@ -368,8 +368,6 @@ namespace
 
         void update()
         {
-            // The COMPACT comes in black only.
-            finishKeys.setEnabled (ctx.consoleModel != ConsoleModel::Compact);
             enableKey (busMinus, ctx.engine.getBuses().size() > (size_t) kWingBuses);
             enableKey (chMinus, ! ctx.engine.getChannels().empty());
             enableKey (showKey, juce::File (ctx.settings.getValue ("lastShowFile")).existsAsFile());
@@ -424,7 +422,7 @@ namespace
                 g.drawText (juce::String (value), valueArea, juce::Justification::centred);
             }
             g.setFont (wingFontFit (TypeScale::body, (float) finishRow.getHeight() * 0.55f));
-            g.drawFittedText ("SURFACE FINISH", finishRow.withRight (finishKeys.getX() - 4), juce::Justification::centredLeft, 1, 0.8f);
+            g.drawFittedText ("APPEARANCE", finishRow.withRight (finishKeys.getX() - 4), juce::Justification::centredLeft, 1, 0.8f);
             g.setColour (Dark::text);
             g.drawFittedText ("CONSOLE MODEL", modelRow.withRight (modelKeys.getX() - 4), juce::Justification::centredLeft, 1, 0.8f);
         }
@@ -490,13 +488,15 @@ namespace
         WingKey editKey { "EDIT", Icon::Edit }, aboutKey { "ABOUT", Icon::Info }, chMinus { "-" }, chPlus { "+" }, chWing { "WING" }, busMinus { "-" }, busPlus { "+" },
             dataKey { "DATA FOLDER", Icon::Folder }, showKey { "SHOW FOLDER", Icon::Folder };
         juce::Rectangle<int> infoBox, dataBox, dataTitle, infoRows[4], configCaption, chRow, busRow, chValue, busValue, finishRow, modelRow;
-        // SURFACE FINISH: the surface view in the silver or the black WING's colours.
-        ChoiceKeys finishKeys { { ConsoleLook::finishName (SurfaceFinish::Silver), ConsoleLook::finishName (SurfaceFinish::Black) },
-                                [this] { return (int) ConsoleLook::load (ctx.settings).shownFinish(); },
+        // APPEARANCE: the surface view WHITE (the silver WING), DARK (matte
+        // black, the default) or BK (the black WING BK's backlit keys).
+        static int finishIndex (SurfaceFinish f) noexcept { return f == SurfaceFinish::Silver ? 0 : f == SurfaceFinish::Matte ? 1 : 2; }
+        ChoiceKeys finishKeys { { "WHITE", "DARK", "BK" },
+                                [this] { return finishIndex (ConsoleLook::load (ctx.settings).shownFinish()); },
                                 [this] (int i)
                                 {
                                     auto look = ConsoleLook::load (ctx.settings);
-                                    look.finish = i == 1 ? SurfaceFinish::Black : SurfaceFinish::Silver;
+                                    look.finish = i == 0 ? SurfaceFinish::Silver : i == 1 ? SurfaceFinish::Matte : SurfaceFinish::Black;
                                     look.save (ctx.settings);
                                     setSurfaceFinish (look.shownFinish());
                                     // WING remote clients see the black WING as "wing-bk".

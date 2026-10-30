@@ -10,7 +10,7 @@ namespace
     constexpr const char* kScreenTypefaceName = "WingScreen";
 
     float screenHeightPx = 500.0f;
-    SurfaceFinish surfaceFinish = SurfaceFinish::Silver;
+    SurfaceFinish surfaceFinish = SurfaceFinish::Matte;
     float capRatio = 0.583f; // cap height / font height of the screen face (measured)
 
     float measureCapRatio (juce::Typeface::Ptr face)
@@ -103,7 +103,49 @@ const SurfacePalette& SurfacePalette::of (SurfaceFinish finish)
         .scribbleRim = juce::Colour (0xff8a90dc),
         .ledOff = juce::Colour (0xff2c2d30),
     };
-    return finish == SurfaceFinish::Black ? black : silver;
+    // The DARK appearance: a matte black surface with charcoal decks, mid grey
+    // layer columns, dark grey keys with light print and white fader caps.
+    static const SurfacePalette matte {
+        .surface = juce::Colour (0xff18191b),
+        .surfacePrint = juce::Colour (0xffb9bcc1),
+        .surfacePrintDim = juce::Colour (0xff8a8d92).withAlpha (0.55f),
+        .surfaceLine = juce::Colours::black.withAlpha (0.75f),
+        .deck = juce::Colour (0xff232427),
+        .deckEdge = juce::Colour (0xff3b3d42).withAlpha (0.9f),
+        .deckShadow = juce::Colours::black.withAlpha (0.35f),
+        .layerColumn = juce::Colour (0xff37393d),
+        .displayUnit = juce::Colour (0xff121315),
+        .plate = juce::Colours::black,
+        .silk = juce::Colour (0xffd4d6da),
+        .silkDim = juce::Colour (0xff8d9095),
+        .sectionLine = juce::Colour (0xff55585d),
+        .keyCap = juce::Colour (0xff45474c),
+        .keyCapEdge = juce::Colours::transparentBlack,
+        .keyCapDim = juce::Colours::transparentBlack,
+        .keyPrint = juce::Colour (0xffe4e6ea),
+        .keyFace = juce::Colour (0xff2a2b2e),
+        .keyRim = juce::Colour (0xff8e9097),
+        .keyLegend = juce::Colour (0xff9fa1a8),
+        .keyBezel = juce::Colour (0xff08090a),
+        .faderCapTop = juce::Colour (0xfff0f1f3),
+        .faderCapUpper = juce::Colour (0xffc2c4c8),
+        .faderCapLower = juce::Colour (0xffe4e5e8),
+        .faderCapBottom = juce::Colour (0xffa8aaae),
+        .faderCapEdge = juce::Colours::black.withAlpha (0.25f),
+        .faderLine = juce::Colour (0xff2a2c30),
+        .scribbleLcd = juce::Colour (0xff5f66c4),
+        .scribbleInk = juce::Colour (0xfff4f4ff),
+        .scribbleRule = juce::Colour (0xffdcdcf8),
+        .scribbleRim = juce::Colour (0xff8a90dc),
+        .ledOff = juce::Colour (0xff2a2b2e),
+    };
+    switch (finish)
+    {
+        case SurfaceFinish::Silver: return silver;
+        case SurfaceFinish::Black: return black;
+        case SurfaceFinish::Matte: break;
+    }
+    return matte;
 }
 
 const SurfacePalette& surfaceColours() noexcept { return SurfacePalette::of (surfaceFinish); }

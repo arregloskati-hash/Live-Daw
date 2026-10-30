@@ -13,7 +13,8 @@ namespace livedaw::ui
 enum class SurfaceFinish
 {
     Silver,
-    Black
+    Black,
+    Matte // DARK appearance: a matte black surface, charcoal decks, grey keys, white fader caps
 };
 
 /** How the console looks (SETUP > GENERAL > CONSOLE), kept in the app
@@ -23,21 +24,41 @@ enum class SurfaceFinish
     finish setting says. */
 struct ConsoleLook
 {
-    static constexpr const char* finishKey = "ui.surfaceFinish"; // "SILVER" (default) or "BLACK"
+    static constexpr const char* finishKey = "ui.surfaceFinish"; // "MATTE" (default, DARK), "SILVER" (WHITE) or "BLACK" (BK)
     static constexpr const char* modelKey = "ui.consoleModel";   // "FULL" (default) or "COMPACT"
 
-    SurfaceFinish finish = SurfaceFinish::Silver;
+    SurfaceFinish finish = SurfaceFinish::Matte;
     ConsoleModel model = ConsoleModel::Full;
 
-    static juce::String finishName (SurfaceFinish f) { return f == SurfaceFinish::Black ? "BLACK" : "SILVER"; }
+    static juce::String finishName (SurfaceFinish f)
+    {
+        switch (f)
+        {
+            case SurfaceFinish::Silver: return "SILVER";
+            case SurfaceFinish::Black: return "BLACK";
+            case SurfaceFinish::Matte: break;
+        }
+        return "MATTE";
+    }
 
-    /** The finish the surface shows: the COMPACT's is black. */
-    SurfaceFinish shownFinish() const noexcept { return model == ConsoleModel::Compact ? SurfaceFinish::Black : finish; }
+    static SurfaceFinish finishFromName (const juce::String& name)
+    {
+        if (name == finishName (SurfaceFinish::Silver)) return SurfaceFinish::Silver;
+        if (name == finishName (SurfaceFinish::Black)) return SurfaceFinish::Black;
+        return SurfaceFinish::Matte; // the default (and anything unknown)
+    }
+
+    /** The finish the surface shows: the COMPACT has no silver one, so it
+        shows black then. */
+    SurfaceFinish shownFinish() const noexcept
+    {
+        return model == ConsoleModel::Compact && finish == SurfaceFinish::Silver ? SurfaceFinish::Black : finish;
+    }
 
     static ConsoleLook load (const juce::PropertiesFile& settings)
     {
         ConsoleLook look;
-        look.finish = settings.getValue (finishKey) == finishName (SurfaceFinish::Black) ? SurfaceFinish::Black : SurfaceFinish::Silver;
+        look.finish = finishFromName (settings.getValue (finishKey));
         look.model = consoleModelFromName (settings.getValue (modelKey));
         return look;
     }
