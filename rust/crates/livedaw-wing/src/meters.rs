@@ -15,7 +15,9 @@
 //! console's screens and surface show.
 
 use crate::map::Console;
+use crate::map::RemoteRta;
 use livedaw_dsp::wing::DYN_MODELS;
+use livedaw_engine::analyser::{rta_view, RTA_BANDS, RTA_FLOOR_DB};
 use livedaw_engine::{Engine, Strip, StripKind};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering::Relaxed;
@@ -32,6 +34,14 @@ pub const FLOOR_DB: f32 = -128.0;
 /// A tick this long after the last one starts the levels over (nobody was
 /// listening; the peaks gathered meanwhile are stale).
 const IDLE: Duration = Duration::from_secs(1);
+
+/// Ports per source group of the source meter family (0xa7, index 0..15):
+/// LCL, AUX, A, B, C, SC, USB, CRD, MOD, PLAY, AES, USR, OSC, BUS, MAIN, MTX
+/// (the console's `/io/in` groups and their sizes).
+pub const SOURCE_GROUP_PORTS: [usize; 16] = [24, 8, 48, 48, 48, 32, 48, 64, 64, 4, 2, 24, 2, 32, 8, 16];
+/// Ports per output group of the output meter family (0xa8, index 0..10):
+/// LCL, AUX, A, B, C, SC, USB, CRD, MOD, REC, AES (`/io/out`).
+pub const OUTPUT_GROUP_PORTS: [usize; 11] = [8, 8, 48, 48, 48, 32, 48, 64, 64, 4, 2];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Meter {
@@ -58,11 +68,15 @@ impl Meter {
         match self {
             Meter::Monitor => 6,
             Meter::Rta => 120,
-            Meter::Indexed(op, _) => match op {
+            Meter::Indexed(op, i) => match op {
                 0xa0..=0xa4 => 8,
                 0xa5 => 4,
                 0xa6 => 10,
-                0xa7 | 0xa8 => 8,
+                // A source / output group: one level per port of the group
+                // (WING Edit reads the frame by these counts; measured: the
+                // RTA after LCL, B, MOD, MAIN lands 112 words past 4 x 8).
+                0xa7 => SOURCE_GROUP_PORTS.get(i as usize).copied().unwrap_or(0),
+                0xa8 => OUTPUT_GROUP_PORTS.get(i as usize).copied().unwrap_or(0),
                 _ => 11, // V2 families
             },
         }
@@ -284,10 +298,112 @@ pub fn frame_words(c: &Console, clock: &MeterClock, meters: &[Meter]) -> Vec<i16
                 let ph = clock.monitor[1].map(|b| db_word(b.db));
                 out.extend([spk[0], spk[1], ph[0], ph[1], spk[0], spk[1]]);
             }
-            Meter::Rta => out.extend(std::iter::repeat_n(i16::MIN, 120)),
+            Meter::Rta => out.extend(rta_words(c)),
         }
     }
     out
+}
+
+/// A client stops getting the RTA this long after its last frame: the
+/// meter stream turns it off again if it turned it on.
+pub const RTA_IDLE: Duration = Duration::from_secs(2);
+
+/// The RTA meter: 120 semitone bands (E0 20.6 Hz .. D#10 19.9 kHz, the
+/// engine's analyser), 1/256 dB, of the strip the console's RTA analyses
+/// (`/cfg/rta/$src`). While no screen shows the RTA, the stream turns it on
+/// for that strip (RTA SOURCE: SEL follows the selection), as the console's
+/// one RTA serves its screens and WING Edit alike.
+pub fn rta_words(c: &Console) -> Vec<i16> {
+    let floor = || vec![i16::MIN; RTA_BANDS];
+    let an = c.engine.analysis();
+    let a = an.controls();
+    {
+        // One RTA, as on the console: whoever shows it first has it. A screen
+        // showing an RTA (Sidecar's HOME or EQ RTA) keeps it and the stream
+        // sends what it analyses; the stream only turns the RTA on (for the
+        // RTA source, in the EQ view whose settings WING Edit's EQ/RTA
+        // SETTINGS set) when nothing shows one, and never moves it while a
+        // screen has it (that reset the analysis every frame).
+        let mut remote = c.state.remote_rta.lock().unwrap_or_else(|e| e.into_inner());
+        let on = a.rta_on.load(Relaxed);
+        if let Some(r) = *remote {
+            let ours =
+                a.strip_kind.load(Relaxed) == r.kind && a.strip_id.load(Relaxed) == r.id && a.view.load(Relaxed) == rta_view::EQ;
+            if !on || !ours {
+                // Turned off, or a screen took it over.
+                *remote = None;
+            }
+        }
+        drop(remote);
+        let screen = c.screen_rta();
+        if !screen {
+            let Some((strip, _)) = c.rta_source() else { return floor() };
+            let (kind, id) = (strip.kind() as i32, strip.id());
+            let mut remote = c.state.remote_rta.lock().unwrap_or_else(|e| e.into_inner());
+            if a.strip_kind.load(Relaxed) != kind || a.strip_id.load(Relaxed) != id || !a.rta_on.load(Relaxed) {
+                a.view.store(rta_view::EQ, Relaxed);
+                a.strip_kind.store(kind, Relaxed);
+                a.strip_id.store(id, Relaxed);
+                a.rta_on.store(true, Relaxed);
+            }
+            *remote = Some(RemoteRta { kind, id, read: Instant::now() });
+        }
+    }
+    an.ensure_thread();
+    let mut levels = [RTA_FLOOR_DB; RTA_BANDS];
+    let mut peaks = [RTA_FLOOR_DB; RTA_BANDS];
+    an.read_rta(&mut levels, &mut peaks);
+    // The console applies the RTA's GAIN or AUTOGAIN (RTA SETTINGS) to what
+    // it sends, and WING Edit draws the words as they come: 1/256 dB above
+    // -128 dB, the top of its graph at full scale (word 32767), its RANGE
+    // (30 or 60 dB) below that. (Measured against WING Edit: signed
+    // dBFS words draw nothing; the same levels 128 dB up draw the loud bands
+    // within RANGE of the top.)
+    let v = a.view_settings();
+    let range = if v.range.load(Relaxed) == 1 { 60.0 } else { 30.0 };
+    let power: f64 = levels.iter().map(|&d| 10f64.powf(d as f64 / 10.0)).sum::<f64>() / RTA_BANDS as f64;
+    let average = (10.0 * (power + 1e-15).log10()) as f32;
+    let gain = if v.autogain.load(Relaxed) { c.state.rta_autogain(average, range) } else { v.gain_db.load() };
+    // WING Edit shows the top RTA_WINDOW_DB under full scale whatever RANGE:
+    // RANGE is fitted into it, so its bars stand as Sidecar's own RTA's do.
+    let fit = crate::map::RTA_WINDOW_DB / range;
+    levels
+        .iter()
+        .map(|&db| {
+            let v = db + gain;
+            // Under RANGE: not shown (the bottom of the scale).
+            rta_word(if v < -range {
+                FLOOR_DB
+            } else if v < 0.0 {
+                v * fit
+            } else {
+                v
+            })
+        })
+        .collect()
+}
+
+/// An RTA band as the console sends it: 1/256 dB above -128 dB (0 at or
+/// below -128 dB, 32767 at full scale and above).
+pub fn rta_word(db: f32) -> i16 {
+    if db.is_nan() {
+        return 0;
+    }
+    ((db - FLOOR_DB) * 256.0).round().clamp(0.0, i16::MAX as f32) as i16
+}
+
+/// Poll thread: turns off an RTA the stream turned on that nobody read lately.
+pub fn release_idle_rta(engine: &Engine, state: &crate::map::WingState) {
+    let mut remote = state.remote_rta.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(r) = *remote else { return };
+    if r.read.elapsed() < RTA_IDLE {
+        return;
+    }
+    let a = engine.analysis().controls();
+    if a.strip_kind.load(Relaxed) == r.kind && a.strip_id.load(Relaxed) == r.id && a.view.load(Relaxed) == rta_view::EQ {
+        a.rta_on.store(false, Relaxed);
+    }
+    *remote = None;
 }
 
 /// A meter datagram: the 4-byte report id, then the words big-endian.

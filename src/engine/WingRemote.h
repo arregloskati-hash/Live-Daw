@@ -13,6 +13,7 @@ namespace livedaw
 
 class MixerEngine;
 class Show;
+class Strip;
 
 namespace state
 {
@@ -40,8 +41,18 @@ public:
         int discoveryPort = 2222, oscPort = 2223, nativePort = 2222;
         bool discovery = true, osc = true, native = true;
 
-        /** The console name is SETUP > GENERAL's CONSOLE NAME (network). */
+        /** The console name is SETUP > GENERAL's CONSOLE NAME (network): the
+            surface's name plate shows it, the network sees networkName(). */
         static constexpr const char* nameKey = "setup.consoleName";
+        /** What the network name adds to the console name: "SKATI" is
+            "SKATI-mixer" to WING remote apps (discovery, /?, $syscfg). */
+        static constexpr const char* networkSuffix = "-mixer";
+
+        /** A console name as entered: trimmed, in capitals, without the
+            network suffix (typed or pasted by mistake); "SIDECAR" if empty. */
+        static juce::String cleanName (const juce::String& typed);
+        /** The name remote apps see for console name `name`. */
+        static juce::String networkName (const juce::String& name) { return cleanName (name) + networkSuffix; }
         static Settings load (juce::PropertiesFile&);
         void save (juce::PropertiesFile&) const;
         bool operator== (const Settings&) const;
@@ -119,6 +130,10 @@ public:
         `onSurfaceChanged` gets the SurfaceChange flags of what a client
         changed and the custom control layer it chose (-1 none). */
     void setSurfaceCallbacks (std::function<int()> ccBank, std::function<void (int changes, int bank)> onSurfaceChanged);
+    /** The selected strip, as clients see it (/$ctl/$stat/selidx; the RTA follows
+        it): `get` reads it (published ten times a second), `select` selects one
+        a client selected. Empty functions: no selection. */
+    void setSelectionCallbacks (std::function<Strip*()> get, std::function<void (Strip&)> select);
     /** Runs the surface exchange now (the timer does it with a show attached). */
     void syncSurface();
 
@@ -153,6 +168,9 @@ private:
     Show* libraryShow = nullptr;
     std::function<void (const juce::String&, const state::ApplyResult&)> onRecalled;
     std::function<int()> surfaceBank;
+    std::function<Strip*()> getSelected;
+    std::function<void (Strip&)> selectStrip;
+    void syncSelection();
     std::function<void (int, int)> onSurfaceChanged;
     juce::PropertiesFile* hostSettings = nullptr;
     juce::StringArray hostSettingKeys;

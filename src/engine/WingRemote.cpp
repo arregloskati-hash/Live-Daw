@@ -1,5 +1,7 @@
 #include "engine/WingRemote.h"
 
+#include <cstring>
+
 #include "engine/MixerEngine.h"
 #include "engine/RustStrings.h"
 #include "engine/Show.h"
@@ -22,9 +24,7 @@ WingRemote::Settings WingRemote::Settings::load (juce::PropertiesFile& p)
 {
     Settings s;
     s.enabled = p.getBoolValue ("wing.enabled", s.enabled);
-    s.name = p.getValue (nameKey, s.name).trim();
-    if (s.name.isEmpty())
-        s.name = "SIDECAR";
+    s.name = cleanName (p.getValue (nameKey, s.name));
     auto port = [&p] (const char* key, int fallback)
     {
         const int v = p.getIntValue (key, fallback);
@@ -57,6 +57,16 @@ bool WingRemote::Settings::operator== (const Settings& o) const
            && nativePort == o.nativePort && discovery == o.discovery && osc == o.osc && native == o.native;
 }
 
+juce::String WingRemote::Settings::cleanName (const juce::String& typed)
+{
+    auto n = typed.trim();
+    // The suffix as the network shows it, in any case, any number of times.
+    while (n.endsWithIgnoreCase (networkSuffix))
+        n = n.dropLastCharacters ((int) std::strlen (networkSuffix)).trimEnd();
+    n = n.toUpperCase();
+    return n.isNotEmpty() ? n : juce::String ("SIDECAR");
+}
+
 //==============================================================================
 juce::StringArray WingRemote::apply (const Settings& s)
 {
@@ -76,7 +86,9 @@ juce::StringArray WingRemote::apply (const Settings& s)
         return getStatus().errors;
     }
 
-    const Utf8 name (s.name);
+    // Utf8 points into the string: keep it alive while the call runs.
+    const auto networkName = Settings::networkName (s.name);
+    const Utf8 name (networkName);
     const auto enable = (juce::uint32) ((s.discovery ? 1 : 0) | (s.osc ? 2 : 0) | (s.native ? 4 : 0));
     ld::ld_wing_start (handle, name.data, name.size, s.discoveryPort, s.oscPort, s.nativePort, enable);
     running = s;
@@ -96,7 +108,8 @@ bool WingRemote::isRunning() const
 
 void WingRemote::setName (const juce::String& newName)
 {
-    const Utf8 u (newName);
+    const auto networkName = Settings::networkName (newName); // Utf8 points into it
+    const Utf8 u (networkName);
     ld::ld_wing_set_name (handle, u.data, u.size);
     running.name = newName;
 }
@@ -195,6 +208,7 @@ void WingRemote::timerCallback()
 void WingRemote::pump()
 {
     pumpHostSettings();
+    syncSelection();
     if (libraryShow == nullptr)
         return;
     pumpSafes();
@@ -233,6 +247,32 @@ void WingRemote::pump()
     }
     publishLibrary();
     syncSurface();
+}
+
+void WingRemote::setSelectionCallbacks (std::function<Strip*()> get, std::function<void (Strip&)> select)
+{
+    getSelected = std::move (get);
+    selectStrip = std::move (select);
+    syncSelection();
+}
+
+void WingRemote::syncSelection()
+{
+    // A client's selection first (WING Edit selecting a channel), then what is selected.
+    int32_t kind = 0, id = 0;
+    while (ld::ld_wing_take_select (handle, &kind, &id))
+    {
+        if (! selectStrip || ! juce::isPositiveAndBelow (kind, kNumStripKinds))
+            continue;
+        for (auto& s : engine.getStrips (static_cast<StripKind> (kind)))
+            if (s->getId() == id)
+            {
+                selectStrip (*s);
+                break;
+            }
+    }
+    const auto* sel = getSelected ? getSelected() : nullptr;
+    ld::ld_wing_set_selected (handle, sel != nullptr ? static_cast<int32_t> (sel->getKind()) : -1, sel != nullptr ? sel->getId() : -1);
 }
 
 void WingRemote::setSurfaceCallbacks (std::function<int()> ccBank, std::function<void (int, int)> changed)

@@ -49,6 +49,8 @@ public:
         fader.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
         fader.setNormalisableRange (fader::range());
         fader.setMouseDragSensitivity (400);
+        fader.setDoubleClickReturnValue (true, 0.0); // unity
+        makeSurfaceFaderRelative (fader);
         fader.onDragStart = [this]
         {
             if (auto* d = midiui::daw (ctx); d != nullptr && channel >= 0)
@@ -205,6 +207,7 @@ public:
         key (muteKey);
         b.removeFromTop (6);
         fader.setBounds (b);
+        setSurfaceFaderTravel (fader);
     }
 
     juce::Rectangle<int> getScribbleArea() const noexcept { return scribbleArea; }

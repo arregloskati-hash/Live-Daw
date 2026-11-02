@@ -131,6 +131,13 @@ MainComponent::MainComponent (juce::AudioDeviceManager& dm, MixerEngine& e, Plug
 {
     juce::LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);
     setLookAndFeel (&lookAndFeel);
+    // MAIN/MTX METER HEADROOM (SETUP > SURFACE > METERING), read as it changes.
+    meterBank.headroomSource = [this]
+    {
+        const int i = juce::jlimit (0, (int) std::size (uiprefs::mainMeterHeadroomSteps) - 1,
+                                    settings.getIntValue (uiprefs::mainMeterHeadroom, uiprefs::mainMeterHeadroomDefault));
+        return uiprefs::mainMeterHeadroomSteps[i];
+    };
     // The surface's finish and the console model (SETUP > GENERAL > CONSOLE)
     // are app settings; the COMPACT is black.
     const auto look = ConsoleLook::load (settings);
@@ -274,6 +281,8 @@ MainComponent::MainComponent (juce::AudioDeviceManager& dm, MixerEngine& e, Plug
                                           });
     engine.getWing().attachShow (&show, [this] (const juce::String& what, const state::ApplyResult& r)
                                  { logRecall (ctx, what, r); });
+    // The selection, both ways: WING Edit shows (and its RTA analyses) the selected strip.
+    engine.getWing().setSelectionCallbacks ([this] { return getSelectedStrip(); }, [this] (Strip& s) { selectStrip (&s); });
     // ... and SETUP's options that are WING parameters (metering, surface, solo, MIDI, DAW).
     engine.getWing().setHostSettings (&settings,
                                       [this] (const juce::StringArray& keys)
@@ -345,6 +354,7 @@ MainComponent::~MainComponent()
     // MIDI and the WING remote's scene and surface control go first: their callbacks reach the views.
     engine.getWing().attachShow (nullptr);
     engine.getWing().setSurfaceCallbacks ({}, {});
+    engine.getWing().setSelectionCallbacks ({}, {});
     engine.getWing().setHostSettings (nullptr);
     ctx.midi = nullptr;
     midiRemote.reset();
@@ -1190,3 +1200,4 @@ void MainComponent::saveShow (bool saveAs)
 }
 
 } // namespace livedaw::ui
+

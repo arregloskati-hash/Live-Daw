@@ -27,8 +27,9 @@ FaderStrip::FaderStrip (UiContext& c, LayerSet::Section s) : ctx (c), section (s
     fader.getProperties().set ("surfaceFader", true);
     fader.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
     fader.setNormalisableRange (fader::range());
-    fader.setDoubleClickReturnValue (true, 0.0);
+    fader.setDoubleClickReturnValue (true, 0.0); // unity
     fader.setMouseDragSensitivity (400);
+    makeSurfaceFaderRelative (fader);
     fader.textFromValueFunction = [] (double db) { return fader::text ((float) db); };
     fader.setPopupDisplayEnabled (true, false, this);
     fader.onValueChange = [this] { writeFader (fader.getValue()); };
@@ -702,6 +703,7 @@ void FaderStrip::resized()
 
     valueArea = showValue ? b.removeFromBottom (14) : juce::Rectangle<int>();
     fader.setBounds (b);
+    setSurfaceFaderTravel (fader);
 }
 
 void FaderStrip::mouseDown (const juce::MouseEvent& e)

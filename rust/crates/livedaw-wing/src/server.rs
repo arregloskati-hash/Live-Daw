@@ -1271,6 +1271,7 @@ fn poll_loop(sh: &Shared) {
         if tick % 2 == 0 {
             sh.poll_changes();
         }
+        meters::release_idle_rta(sh.engine(), &sh.state);
         sh.watch_clients();
         lock(&sh.clients).retain(|c| c.alive.load(Ordering::Relaxed));
     }

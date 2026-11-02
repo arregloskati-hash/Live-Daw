@@ -189,6 +189,19 @@ pub struct Safes {
     pub fx: u32,
 }
 
+/// The RTA the meter stream turned on: the strip (kind, engine id) it set
+/// and when a client last read it.
+#[derive(Clone, Copy, Debug)]
+pub struct RemoteRta {
+    pub kind: i32,
+    pub id: i32,
+    pub read: std::time::Instant,
+}
+
+/// The dB under full scale WING Edit's RTA shows (measured: 4.8 px/dB,
+/// nothing drawn 25 dB under full scale).
+pub const RTA_WINDOW_DB: f32 = 25.0;
+
 /// State of the virtual console beyond the engine: values of nodes Sidecar
 /// has no equivalent for, the console identity, the scene library, the USB
 /// recorder's settings, the show's recall safes and the surface's layers and
@@ -216,6 +229,18 @@ pub struct WingState {
     /// The console model and whether the full-size console is black (the
     /// identity and the COMPACT's own nodes follow them).
     console: Mutex<(ConsoleModel, bool)>,
+    /// The selected strip (kind, engine id) as the host published it
+    /// (`/$ctl/$stat/selidx`; the RTA follows it).
+    selected: Mutex<Option<(StripKind, i32)>>,
+    /// Strips clients selected (`selidx` set), for the host to select.
+    select_requests: Mutex<VecDeque<(StripKind, i32)>>,
+    /// The meter stream turned the RTA on (nobody on the screens had):
+    /// the strip it analyses, so it can turn it off again.
+    pub(crate) remote_rta: Mutex<Option<RemoteRta>>,
+    /// AUTOGAIN of the RTA the stream sends: the gain (dB) and when it last moved.
+    rta_autogain: Mutex<Option<(f32, std::time::Instant)>>,
+    /// The strip a client last set RTA SOURCE to (`rtasrc`).
+    rta_fixed: Mutex<Option<(StripKind, i32)>>,
 }
 
 impl WingState {
@@ -305,6 +330,43 @@ impl WingState {
     pub fn take_safes(&self) -> Option<Safes> {
         let mut s = lock(&self.safes);
         std::mem::take(&mut s.1).then_some(s.0)
+    }
+
+    /// Host: the strip selected on the console (None: none).
+    pub fn set_selected(&self, strip: Option<(StripKind, i32)>) {
+        *lock(&self.selected) = strip;
+    }
+
+    pub fn selected(&self) -> Option<(StripKind, i32)> {
+        *lock(&self.selected)
+    }
+
+    /// AUTOGAIN for the RTA meter, as Sidecar's own RTA does it: the power
+    /// average of the bands sits mid-RANGE under the top of the graph
+    /// (smoothed, about 0.3 s), so the spectrum fills the graph instead of
+    /// only its loudest band reaching it.
+    pub fn rta_autogain(&self, average_db: f32, range_db: f32) -> f32 {
+        let now = std::time::Instant::now();
+        let mut g = lock(&self.rta_autogain);
+        // Silence: no gain (nothing to lift).
+        // Mid-RANGE under full scale, as Sidecar's own RTA; within the
+        // console's RTA GAIN range (-5..50 dB), so that silence (the
+        // analyser's noise floor) is never lifted into view.
+        let target = if average_db <= -110.0 { 0.0 } else { (-range_db / 2.0 - average_db).clamp(-5.0, 50.0) };
+        let gain = match *g {
+            Some((last, at)) => {
+                let k = (now.duration_since(at).as_secs_f32() / 0.3).min(1.0);
+                last + (target - last) * k
+            }
+            None => target,
+        };
+        *g = Some((gain, now));
+        gain
+    }
+
+    /// Host: the next strip a client selected.
+    pub fn take_select_request(&self) -> Option<(StripKind, i32)> {
+        lock(&self.select_requests).pop_front()
     }
 
     fn shadow_get(&self, key: ShadowKey) -> Option<Value> {
@@ -700,6 +762,8 @@ pub enum RtaF {
     AutoGain,
     /// The analysed strip (`$src`, read-only).
     Source,
+    /// Where it is analysed (`$tap`, read-only): `rtatap`.
+    Tap,
 }
 
 /// `/io/in/<group>/<n>/...`: a source's settings.
@@ -793,8 +857,10 @@ pub enum Binding {
     Osc(u8, OscF),
     /// RTA settings: false = HOME (`rta*`), true = EQ (`eq*`).
     Rta(bool, RtaF),
-    /// The RTA on screen (`/cfg/rta/$src`, `$dec`, `$det`).
+    /// The RTA on screen (`/cfg/rta/$src`, `$dec`, `$det`, `$tap`).
     RtaShown(RtaF),
+    /// `/$ctl/$stat/selidx`: the selected strip's number (1-76).
+    SelIdx,
     /// FX slot (0-based) assignment: the strip using it (`$a_chn`, false) or
     /// the insert it is in (`$a_pos`, true).
     FxAssign(u8, bool),
@@ -1174,6 +1240,8 @@ pub fn bind(parts: &[&str]) -> Binding {
         ["cfg", "rta", "$src"] => Binding::RtaShown(RtaF::Source),
         ["cfg", "rta", "$dec"] => Binding::RtaShown(RtaF::Decay),
         ["cfg", "rta", "$det"] => Binding::RtaShown(RtaF::Detector),
+        ["cfg", "rta", "$tap"] => Binding::RtaShown(RtaF::Tap),
+        ["$ctl", "$stat", "selidx"] => Binding::SelIdx,
         ["cfg", "mainlink"] => Binding::Ctl(CtlF::MainLink),
         ["cfg", "dcamgrp"] => Binding::Ctl(CtlF::DcaMuteGroups),
         ["cfg", "solo", "chtap"] => Binding::Ctl(CtlF::SoloAfl(StripKind::Channel)),
@@ -1787,6 +1855,13 @@ fn int(v: &AtomicI32) -> Value {
 }
 
 /// An engine index as an item of the node's enum.
+/// A node of the RTA settings, looked up once.
+fn rta_node(path: &'static str) -> Option<Node> {
+    static NODES: OnceLock<Mutex<HashMap<&'static str, Option<Node>>>> = OnceLock::new();
+    let mut m = lock(NODES.get_or_init(Default::default));
+    *m.entry(path).or_insert_with(|| schema().resolve(path, &NoModels))
+}
+
 fn item(def: &Def, index: i32) -> Value {
     usize::try_from(index)
         .ok()
@@ -1979,6 +2054,47 @@ impl<'a> Console<'a> {
             .chain(self.buses.iter().enumerate().filter_map(|(i, s)| Some((StripKind::Bus, 48 + i as i32 + 1, s.as_ref()?))))
             .chain(list(StripKind::Main, 64, 4, &self.mains))
             .chain(list(StripKind::Matrix, 68, 8, &self.matrices))
+    }
+
+    /// The strip the console's one RTA analyses, with its number: the one the
+    /// screens show the RTA of while they show it; else RTA SOURCE
+    /// (`/cfg/rta/rtasrc`: 1-76 a strip, 0 SEL: the selected one).
+    /// Sidecar's screens show an RTA of their own: on, not the stream's, and
+    /// of the selected strip (a screen's RTA of another strip is one left
+    /// behind by a page no longer shown) or of a monitor path.
+    pub fn screen_rta(&self) -> bool {
+        let a = self.engine.analysis().controls();
+        if !a.rta_on.load(Relaxed) || lock(&self.state.remote_rta).is_some() {
+            return false;
+        }
+        let Some(kind) = StripKind::from_i32(a.strip_kind.load(Relaxed)) else { return true };
+        self.state.selected().is_none_or(|sel| sel == (kind, a.strip_id.load(Relaxed)))
+    }
+
+    pub fn rta_source(&self) -> Option<(Arc<Strip>, i32)> {
+        let a = self.engine.analysis().controls();
+        let screen = self.screen_rta();
+        let find = |kind: StripKind, id: i32| {
+            self.numbered().find(|(k, _, s)| *k == kind && s.id() == id).map(|(_, n, s)| (s.clone(), n))
+        };
+        if screen {
+            if let Some(kind) = StripKind::from_i32(a.strip_kind.load(Relaxed)) {
+                return find(kind, a.strip_id.load(Relaxed));
+            }
+        }
+        // A fixed RTA SOURCE holds until another strip is selected (on
+        // Sidecar or by a client): the RTA follows the strip being looked at,
+        // each channel, bus, main or matrix its own.
+        let fixed = rta_node("/cfg/rta/rtasrc").and_then(|n| self.get(n)).and_then(|v| v.as_i32()).unwrap_or(0);
+        let selected = self.state.selected();
+        if fixed > 0 {
+            let claimed = *lock(&self.state.rta_fixed);
+            if selected.is_none() || claimed.is_none() || selected == claimed {
+                return self.numbered().find(|(_, k, _)| *k == fixed).map(|(_, n, s)| (s.clone(), n));
+            }
+        }
+        let (kind, id) = selected?;
+        find(kind, id)
     }
 
     pub fn binding(&self, node: Node) -> Binding {
@@ -2235,22 +2351,33 @@ impl<'a> Console<'a> {
                     RtaF::Range => item(def, v.range.load(Relaxed)),
                     RtaF::Gain => f(&v.gain_db),
                     RtaF::AutoGain => b(&v.autogain),
-                    RtaF::Source => return None,
+                    RtaF::Source | RtaF::Tap => return None,
                 }
             }
             Binding::RtaShown(rf) => {
                 let a = e.analysis().controls();
                 let v = if a.view.load(Relaxed) == rta_view::HOME { &a.home } else { &a.eq };
                 match rf {
-                    RtaF::Source => {
-                        let kind = StripKind::from_i32(a.strip_kind.load(Relaxed))?;
-                        let id = a.strip_id.load(Relaxed);
-                        Value::Int(self.numbered().find(|(k, _, s)| *k == kind && s.id() == id).map(|(_, n, _)| n)?)
-                    }
+                    // The strip the RTA analyses: the screens' while they show
+                    // it, else RTA SOURCE (SEL: the selected strip), as the
+                    // console has one RTA (WING Edit's RTA needs it to be
+                    // the strip it shows: "RTA in use! Check mixer settings").
+                    RtaF::Source => Value::Int(self.rta_source()?.1),
+                    // RTA SOURCE TAP (`rtatap`). WING Edit claims the RTA for
+                    // a strip's EQ by writing RTA SOURCE and TAP (PREEQ /
+                    // POSTEQ) and then needs `$tap` to say so ("RTA in use!
+                    // Check mixer settings" otherwise).
+                    RtaF::Tap => return self.get(rta_node("/cfg/rta/rtatap")?).and_then(|t| value::coerce(def, &t)),
                     RtaF::Decay => item(def, v.decay.load(Relaxed)),
                     RtaF::Detector => item(def, v.detector.load(Relaxed)),
                     _ => return None,
                 }
+            }
+            Binding::SelIdx => {
+                // Read back 0-based (0..75), set 1-based (1..76), as the
+                // console does (protocol document, /$ctl/$stat/selidx note).
+                let (kind, id) = self.state.selected()?;
+                Value::Int(self.numbered().find(|(k, _, s)| *k == kind && s.id() == id).map(|(_, n, _)| n - 1)?)
             }
             Binding::FxAssign(i, pos) => {
                 // The first insert using the slot, in the WING's strip order.
@@ -2883,6 +3010,20 @@ impl<'a> Console<'a> {
             }
             _ => value::quantise(def, &value::coerce(def, v).ok_or(SetError::BadValue)?),
         };
+        // A client setting RTA SOURCE to a strip (WING Edit does, for the
+        // strip whose EQ it shows) selects it on Sidecar too, so Sidecar's
+        // screens and the console's one RTA show that strip.
+        if Some(node) == rta_node("/cfg/rta/rtasrc") {
+            let n = cv.as_i32().unwrap_or(0);
+            let strip = self.numbered().find(|(_, k, _)| *k == n).map(|(kind, _, s)| (kind, s.id()));
+            *lock(&self.state.rta_fixed) = strip;
+            if let Some(sel) = strip {
+                if self.state.selected() != Some(sel) {
+                    self.state.set_selected(Some(sel));
+                    lock(&self.state.select_requests).push_back(sel);
+                }
+            }
+        }
         let applied = match node {
             Node::Root => return Err(SetError::NotFound),
             Node::Row(r) => self.set_row(r, def, &cv)?,
@@ -3149,7 +3290,7 @@ impl<'a> Console<'a> {
                     RtaF::Range => set_item(&rv.range, def, v),
                     RtaF::Gain => set_f(&rv.gain_db, v),
                     RtaF::AutoGain => set_b(&rv.autogain, v),
-                    RtaF::Source => return Err(SetError::ReadOnly),
+                    RtaF::Source | RtaF::Tap => return Err(SetError::ReadOnly),
                 }
             }
             Binding::Source(group, n, sf) => {
@@ -3196,6 +3337,13 @@ impl<'a> Console<'a> {
                 }
             },
             Binding::RtaShown(_) | Binding::FxAssign(..) => return Err(SetError::ReadOnly),
+            Binding::SelIdx => {
+                let n = v.as_i32().ok_or(SetError::BadValue)?;
+                let (kind, _, strip) = self.numbered().find(|(_, k, _)| *k == n).ok_or(SetError::BadValue)?;
+                let sel = (kind, strip.id());
+                self.state.set_selected(Some(sel));
+                lock(&self.state.select_requests).push_back(sel);
+            }
             Binding::Osc(n, of) => {
                 let o = e.sources().osc(n as usize).ok_or(SetError::NotFound)?;
                 match of {
@@ -4681,6 +4829,7 @@ mod tests {
         let aux2 = c.strip(StripKind::Aux, 2).unwrap().clone();
         a.strip_kind.store(StripKind::Aux as i32, Relaxed);
         a.strip_id.store(aux2.id(), Relaxed);
+        a.rta_on.store(true, Relaxed); // a screen shows it
         assert_eq!(c.get(node(&c, "/cfg/rta/$src")), Some(Value::Int(42)));
         a.home.decay.store(0, Relaxed);
         a.eq.decay.store(2, Relaxed);
@@ -5511,7 +5660,7 @@ mod tests {
         assert_eq!(cov.mapped, 79325, "{}", cov.report());
         // 89 settings: the COMPACT's mfdr, cscmode, autosel_CMPCT, mfdrkeep, busspill, mainspill,
         // mtxspill and dcacc and the surface lock (cnslock) among them.
-        assert_eq!((cov.settings, cov.stored), (89, 5424), "{}", cov.report());
+        assert_eq!((cov.settings, cov.stored), (89, 5422), "{}", cov.report());
         for (g, (m, t)) in &cov.by_group {
             assert!(m == t || g == "/$ctl/daw", "{g}: {m} of {t}");
         }
@@ -5519,7 +5668,7 @@ mod tests {
         // The engine-backed share: everything but the settings and the stored values.
         // (The COMPACT's key sets count here on either model; the routing: every
         // bus to every other bus, USR 1-56 and their user/..., the matrices' dir/in.)
-        assert_eq!(cov.mapped - cov.settings - cov.stored, 73812);
+        assert_eq!(cov.mapped - cov.settings - cov.stored, 73814);
         let b = bindings();
         let row = |p: &str| match schema().resolve(p, &NoModels) {
             Some(Node::Row(r)) => r as usize,

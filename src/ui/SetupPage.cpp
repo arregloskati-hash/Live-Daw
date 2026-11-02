@@ -305,9 +305,10 @@ namespace
         {
             editKey.onClick = [this]
             {
-                editText (this, "CONSOLE NAME", ctx.settings.getValue (prefs::consoleName, "SIDECAR"), [this] (const juce::String& name)
+                editText (this, "CONSOLE NAME", WingRemote::Settings::load (ctx.settings).name, [this] (const juce::String& name)
                 {
-                    const auto newName = name.isNotEmpty() ? name.toUpperCase() : juce::String ("SIDECAR");
+                    // The name plate shows it; the network sees it as NAME-mixer.
+                    const auto newName = WingRemote::Settings::cleanName (name);
                     ctx.settings.setValue (prefs::consoleName, newName);
                     // The running WING remote and the MIDI identity answer with it right away
                     // (as when it is changed on SETUP > REMOTE).
@@ -315,7 +316,9 @@ namespace
                         ctx.engine.getWing().setName (newName);
                     if (ctx.midi != nullptr)
                         ctx.midi->consoleName = newName;
-                    repaint();
+                    // The name plate on the surface.
+                    if (auto* top = getTopLevelComponent())
+                        top->repaint();
                 });
             };
             chMinus.onClick = [this] { setChannels ((int) ctx.engine.getChannels().size() - 1); };
@@ -390,7 +393,9 @@ namespace
 
             auto* device = ctx.deviceManager.getCurrentAudioDevice();
             const std::pair<juce::String, juce::String> info[] = {
-                { "CONSOLE NAME (network)", ctx.settings.getValue (prefs::consoleName, "SIDECAR") },
+                // The name plate's name, and what the network sees.
+                { "CONSOLE NAME (network: " + WingRemote::Settings::networkName (WingRemote::Settings::load (ctx.settings).name) + ")",
+                  WingRemote::Settings::load (ctx.settings).name },
                 // The audio thread and the workers, as the log and SETUP > LOG count them.
                 { "ENGINE", "RUST, " + juce::String (ctx.engine.getNumWorkerThreads() + 1) + " DSP THREADS" },
                 { "SOFTWARE", juce::String (kAppName).toUpperCase() + " " + juce::String (JUCE_APPLICATION_VERSION_STRING) },
@@ -1153,6 +1158,9 @@ namespace
                                                            [this] { return juce::jlimit (0, 2, ctx.settings.getIntValue (uiprefs::mainMeterTap, uiprefs::mainMeterTapDefault)); },
                                                            [this] (int v) { ctx.settings.setValue (uiprefs::mainMeterTap, v); }, ChoiceKeys::autoPrePost()),
                              3.6f);
+            // Sidecar's own: the mains' and matrices' meters read this much lower
+            // (MeterBank::setHeadroomDb); a real overload still lights CLIP.
+            metering.addRow ("MAIN/MTX HEADROOM", choiceSetting (uiprefs::mainMeterHeadroom, { "0 dB", "6 dB", "10 dB", "12 dB" }, uiprefs::mainMeterHeadroomDefault), 3.6f);
             // PRE or POST per strip type: the surface's LED meters, the VIEW screens'
             // meters and the main meter's AUTO follow these (prefs::meterPoint; PRE is
             // after TRIM, before the EQ). METERS > SETTINGS has its own.
@@ -1977,8 +1985,10 @@ namespace
                                                                       [this, change] (const juce::String& name)
                                                                       {
                                                                           auto s = WingRemote::Settings::load (ctx.settings);
-                                                                          s.name = name.isNotEmpty() ? name.toUpperCase() : juce::String ("SIDECAR");
+                                                                          s.name = WingRemote::Settings::cleanName (name);
                                                                           change (s);
+                                                                          if (auto* top = getTopLevelComponent())
+                                                                              top->repaint();
                                                                       });
                                                         });
             addAndMakeVisible (*wingName);

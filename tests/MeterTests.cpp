@@ -144,6 +144,36 @@ public:
             expectEquals (bank.get (nullptr, MeterPoint::Input, 0), 0.0f);
         }
 
+        beginTest ("MAIN/MTX METER HEADROOM: the mains and matrices read lower, a channel doesn't, CLIP stays true");
+        {
+            MixerEngine engine (0);
+            OfflineRig rig (engine, 2, 2);
+            test::setChannels (engine, 1);
+            auto& ch = *engine.getChannels()[0];
+            auto& main = *engine.getStrips (StripKind::Main)[0];
+            ui::MeterBank bank (engine);
+            bank.setHeadroomDb (10.0f);
+            const auto out = [&] (Strip& s) { return dsp::gainToDb (bank.get (&s, MeterPoint::Output, 0)); };
+            rig.setInput (0, 0.25f); // -12 dBFS
+            rig.run (8);
+            bank.advance (frame);
+            expectWithinAbsoluteError (out (ch), -12.04f, 0.05f);
+            expectWithinAbsoluteError (out (main), -22.04f, 0.05f);
+            // An overload reads as it is.
+            rig.setInput (0, 1.2f);
+            rig.run (8);
+            bank.advance (frame);
+            expect (out (main) > -0.1f, "CLIP still shows: " + juce::String (out (main)));
+            // 0 dB: as before.
+            bank.setHeadroomDb (0.0f);
+            rig.setInput (0, 0.25f);
+            rig.run (8);
+            bank.advance (10.0f);
+            rig.run (4);
+            bank.advance (frame);
+            expectWithinAbsoluteError (out (main), -12.04f, 0.05f);
+        }
+
         beginTest ("The PRE meter tap: after TRIM, before the EQ (TRIM moves it, the EQ doesn't); POST after the fader");
         {
             // Every PRE / POST setting (SETUP > SURFACE > METERING, METERS > SETTINGS,

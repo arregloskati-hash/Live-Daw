@@ -122,27 +122,27 @@ public:
 
             juce::DatagramSocket sock;
             expect (sock.bindToPort (0, "127.0.0.1"));
-            expect (ask (sock, st.oscPort, oscGet ("/?")).contains ("TEST-WING"));
+            expect (ask (sock, st.oscPort, oscGet ("/?")).contains ("TEST-WING-mixer,")); // the network name
             wing.setName ("RENAMED");
             expect (ask (sock, st.oscPort, oscGet ("/?")).contains ("RENAMED"));
             // The model, as a full-size WING or a COMPACT reports it.
-            expect (ask (sock, st.oscPort, oscGet ("/?")).contains ("RENAMED,ngc-full,"));
+            expect (ask (sock, st.oscPort, oscGet ("/?")).contains ("RENAMED-mixer,ngc-full,"));
             wing.setConsoleModel (ConsoleModel::Compact);
-            expect (ask (sock, st.oscPort, oscGet ("/?")).contains ("RENAMED,wing-compact,"));
+            expect (ask (sock, st.oscPort, oscGet ("/?")).contains ("RENAMED-mixer,wing-compact,"));
             expect (ask (sock, st.oscPort, oscGet ("/$syscfg/$cnsmdl")).contains ("wing-compact"));
             expect (ask (sock, st.oscPort, oscGet ("/$syscfg/$cnscfg")).contains ("wing-compact")); // WING Edit's model
             wing.setConsoleModel (ConsoleModel::Full);
-            expect (ask (sock, st.oscPort, oscGet ("/?")).contains ("RENAMED,ngc-full,"));
+            expect (ask (sock, st.oscPort, oscGet ("/?")).contains ("RENAMED-mixer,ngc-full,"));
             // The black full-size WING is "wing-bk" (the COMPACT stays itself).
             wing.setBlackFinish (true);
-            expect (ask (sock, st.oscPort, oscGet ("/?")).contains ("RENAMED,wing-bk,"));
+            expect (ask (sock, st.oscPort, oscGet ("/?")).contains ("RENAMED-mixer,wing-bk,"));
             expect (ask (sock, st.oscPort, oscGet ("/$syscfg/$cnsmdl")).contains ("wing-bk"));
             expect (ask (sock, st.oscPort, oscGet ("/$syscfg/$cnscfg")).contains ("wing-bk"));
             wing.setConsoleModel (ConsoleModel::Compact);
-            expect (ask (sock, st.oscPort, oscGet ("/?")).contains ("RENAMED,wing-compact,"));
+            expect (ask (sock, st.oscPort, oscGet ("/?")).contains ("RENAMED-mixer,wing-compact,"));
             wing.setConsoleModel (ConsoleModel::Full);
             wing.setBlackFinish (false);
-            expect (ask (sock, st.oscPort, oscGet ("/?")).contains ("RENAMED,ngc-full,"));
+            expect (ask (sock, st.oscPort, oscGet ("/?")).contains ("RENAMED-mixer,ngc-full,"));
 
             const auto set = oscFloat ("/ch/2/fdr", -12.0f);
             sock.write ("127.0.0.1", st.oscPort, set.getData(), (int) set.getSize());

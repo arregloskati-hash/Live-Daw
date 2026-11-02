@@ -1412,6 +1412,11 @@ extern "C"
     void ld_wing_set_library (LdWing*, const char* show, size_t showLen, int32_t numScenes, int32_t current,
                               const char* scene, size_t sceneLen, int32_t tag);
     void ld_wing_clear_library (LdWing*);
+    /** The strip selected on the console (kind -1: none): /$ctl/$stat/selidx, which the RTA
+        follows (RTA SOURCE SEL), and the strip WING Edit shows. */
+    void ld_wing_set_selected (LdWing*, int32_t kind, int32_t id);
+    /** The next strip a client selected (selidx): false if none. */
+    bool ld_wing_take_select (LdWing*, int32_t* kind, int32_t* id);
     /** The next scene recall a client asked for: action 1 GO (index: the scene, 0-based),
         2 GO NEXT, 3 GO PREV, 4 GO TAG (index: the tag). False if none. */
     bool ld_wing_take_library_action (LdWing*, int32_t* action, int32_t* index);

@@ -1,5 +1,6 @@
 #include "ui/SurfaceSections.h"
 #include "engine/AppPaths.h"
+#include "engine/WingRemote.h"
 #include "daw/Session.h"
 #include "daw/TimeGrid.h"
 #include "ui/MidiRemoteUi.h"
@@ -906,22 +907,21 @@ MonitorSection::MonitorSection (UiContext& c) : ctx (c)
     monitorKey (monoKey, ctx.engine.monitorMono, ctx.engine.monitorSwap, "MONO: sum the monitor to mono (hold: swap left and right)");
 }
 
+namespace
+{
+    /** The name plate's name: the console name (SETUP > GENERAL > CONSOLE). */
+    juce::String consoleDisplayName (juce::PropertiesFile& settings) { return WingRemote::Settings::load (settings).name; }
+} // namespace
+
 void MonitorSection::paint (juce::Graphics& g)
 {
     g.fillAll (surfaceColours().surface);
 
-    // The panel's top: the PHONES socket mark and the app's own name (not the
-    // console maker's logo: Sidecar is not affiliated with them).
+    // The panel's top: the name plate, showing the console name (SETUP >
+    // GENERAL > CONSOLE: CONSOLE NAME; the app's name until one is set).
     if (! logoArea.isEmpty())
     {
-        auto mark = logoArea.reduced (14, 8).removeFromTop (16).toFloat();
-        g.setColour (surfaceColours().surfacePrint);
-        g.drawLine (mark.getX() + 1.0f, mark.getY() - 2.0f, mark.getX() + 1.0f, mark.getCentreY() + 2.0f, 1.0f);
-        g.drawLine (mark.getX() + 1.0f, mark.getCentreY() + 2.0f, mark.getX() + 12.0f, mark.getCentreY() + 2.0f, 1.0f);
-        drawIcon (g, Icon::Headphones, juce::Rectangle<float> (14.0f, 14.0f).withPosition (mark.getX() + 15.0f, mark.getY()), surfaceColours().surfacePrint);
-        drawSilk (g, mark.withTrimmedLeft (32.0f), "PHONES", 9.0f, juce::Justification::centredLeft, surfaceColours().surfacePrint);
-
-        const juce::String name = juce::String (kAppName).toUpperCase();
+        const juce::String name = consoleDisplayName (ctx.settings);
         auto logo = logoArea.toFloat().withSizeKeepingCentre ((float) logoArea.getWidth() * 0.7f, (float) logoArea.getHeight() * 0.2f);
         const auto font = juce::Font (juce::FontOptions (logo.getHeight() * 1.1f, juce::Font::bold)).withExtraKerningFactor (0.06f);
         g.setFont (fontFittingWidth (font, name, logo.getWidth(), 1.0f));
@@ -943,23 +943,7 @@ void MonitorSection::paint (juce::Graphics& g)
         drawSilk (g, bar.toFloat().withTrimmedTop (2.0f), title, juce::jlimit (8.0f, 12.0f, (float) bar.getHeight() * 0.72f));
     }
 
-    // The USB socket plate: socket, 5V 1000mA, the USB mark and the ACCESS LED.
-    auto plate = usbPlate.toFloat();
-    g.setColour (juce::Colours::black);
-    g.fillRoundedRectangle (plate, 3.0f);
-    g.setColour (Colours::outline);
-    g.drawRoundedRectangle (plate, 3.0f, 1.0f);
-    auto inner = plate.reduced (6.0f, 4.0f);
-    auto caption = inner.removeFromTop (inner.getHeight() * 0.3f);
-    drawSilk (g, caption.withWidth (caption.getWidth() * 0.55f), "5V  1000mA", 8.0f, juce::Justification::centredLeft);
-    drawSilk (g, caption.withTrimmedLeft (caption.getWidth() * 0.6f), "ACCESS", 8.0f, juce::Justification::centredLeft);
-    auto socket = inner.removeFromLeft (inner.getWidth() * 0.5f).reduced (2.0f, 1.0f);
-    g.setColour (surfaceColours().silk);
-    g.drawRoundedRectangle (socket, 2.0f, 1.5f);
-    g.drawRect (socket.reduced (socket.getWidth() * 0.18f, socket.getHeight() * 0.3f), 1.0f);
-    drawIcon (g, Icon::Usb, inner.removeFromLeft (inner.getWidth() * 0.4f), surfaceColours().silk);
-    g.setColour (surfaceColours().ledOff.brighter (0.2f));
-    g.fillRect (inner.withSizeKeepingCentre (juce::jmin (16.0f, inner.getWidth() * 0.8f), 5.0f));
+    // (No USB socket plate: Sidecar has no USB slot to show.)
 
     // Captions under the pots and keys.
     auto below = [] (juce::Component& c, int h) { return c.getBounds().withY (c.getBottom() + 3).withHeight (h).expanded (24, 0).toFloat(); };

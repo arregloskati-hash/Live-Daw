@@ -143,6 +143,22 @@ struct SurfacePalette
     static const SurfacePalette& of (SurfaceFinish);
 };
 
+/** A surface fader moves only when dragged or scrolled: a click on the
+    track doesn't make it jump there (a double-click still sets unity where
+    the fader has one). Call once when it's set up. */
+inline void makeSurfaceFaderRelative (juce::Slider& f)
+{
+    f.setSliderSnapsToMousePosition (false);
+    f.setScrollWheelEnabled (true);
+}
+
+/** Call from the owner's resized(), after the fader's bounds: a drag moves
+    the cap with the pointer, one pixel of travel per pixel dragged. */
+inline void setSurfaceFaderTravel (juce::Slider& f)
+{
+    f.setMouseDragSensitivity (juce::jmax (40, f.getHeight() - 2 * f.getLookAndFeel().getSliderThumbRadius (f)));
+}
+
 /** The colours of the finish shown (silver until setSurfaceFinish). */
 const SurfacePalette& surfaceColours() noexcept;
 

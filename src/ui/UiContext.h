@@ -257,6 +257,12 @@ namespace uiprefs
     constexpr int mainMeterDefault = 1;
     constexpr const char* mainMeterTap = "ui.mainMeterTap"; // 0 AUTO (default), 1 PRE, 2 POST
     constexpr int mainMeterTapDefault = 0;
+    // MAIN/MTX METER HEADROOM (SETUP > SURFACE > METERING; Sidecar's own, not
+    // the WING's): the mains' and matrices' meters read this many dB lower
+    // (MeterBank::headroomDb; index into mainMeterHeadroomSteps), CLIP stays true.
+    constexpr const char* mainMeterHeadroom = "ui.mainMeterHeadroom";
+    constexpr int mainMeterHeadroomDefault = 0;
+    constexpr float mainMeterHeadroomSteps[] = { 0.0f, 6.0f, 10.0f, 12.0f };
 
     // GENERAL (SETUP > GENERAL).
     constexpr const char* alwaysShowScene = "ui.alwaysShowScene";    // the status bar's title tile shows the active scene

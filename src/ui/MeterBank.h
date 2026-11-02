@@ -6,6 +6,7 @@
 #include <juce_events/juce_events.h>
 
 #include <array>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -99,10 +100,22 @@ public:
         return juce::isPositiveAndBelow (index, (int) sources.size()) ? dsp::dbToGain (sources[(size_t) index].levelDb) : 0.0f;
     }
 
+    /** MAIN/MTX METER HEADROOM: the mains' and matrices' meters read this
+        many dB lower (a calmer meter for a busy mix). A peak at or over CLIP
+        still reads as it is, so a real overload always shows. */
+    void setHeadroomDb (float db) noexcept { headroomGain = dsp::dbToGain (-juce::jlimit (0.0f, 24.0f, db)); }
+    /** Where the headroom comes from (the app setting), read every frame. */
+    std::function<float()> headroomSource;
+
+    /** The level a main's or matrix's meter shows for `peak` (linear). */
+    float withHeadroom (float peak) const noexcept { return peak >= kClipGain ? peak : peak * headroomGain; }
+
     /** Takes the engine's peaks and moves every meter on by `seconds` (the
         timer does this with the time that passed; tests drive it). */
     void advance (float seconds)
     {
+        if (headroomSource)
+            setHeadroomDb (headroomSource());
         if (engine.getStructureVersion() != version)
         {
             levels.clear();
@@ -111,12 +124,16 @@ public:
 
         for (int k = 0; k < kNumStripKinds; ++k)
         {
+            const bool headroom = k == (int) StripKind::Main || k == (int) StripKind::Matrix;
             for (auto& s : engine.getStrips (static_cast<StripKind> (k)))
             {
                 auto& l = levels[s->getHandle()];
                 for (auto point : points)
                     for (int ch = 0; ch < 2; ++ch)
-                        l[index (point, ch)].advance (s->peakMeter (point, ch).exchange (0.0f), seconds);
+                    {
+                        const float peak = s->peakMeter (point, ch).exchange (0.0f);
+                        l[index (point, ch)].advance (headroom ? withHeadroom (peak) : peak, seconds);
+                    }
             }
         }
 
@@ -159,7 +176,11 @@ private:
         advance (seconds);
     }
 
+    /** CLIP: the meters' top LED (-0.1 dBFS). */
+    static constexpr float kClipGain = 0.98855f;
+
     MixerEngine& engine;
+    float headroomGain = 1.0f;
     std::unordered_map<ld::Strip*, std::array<meters::Ballistics, numLevels>> levels;
     std::array<meters::Ballistics, 2> monitor {}, phones {};
     std::vector<meters::Ballistics> sources;

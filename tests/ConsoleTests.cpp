@@ -1,5 +1,6 @@
 #include "TestHelpers.h"
 #include "engine/Show.h"
+#include "engine/WingRemote.h"
 #include "ui/ConsoleLook.h"
 
 using namespace livedaw;
@@ -316,6 +317,26 @@ public:
             expectEquals (restoredEngine.monitorPath (true).delayM.load(), 20.0f);
             expectEquals ((int) restoredEngine.monitor.sourceSolo.load(), (int) ld::kSourceSoloCh39);
             expectEquals ((int) restoredEngine.getSource (0)->muteGroups.load(), 2);
+        }
+
+        beginTest ("The console name: the name plate's, and NAME-mixer on the network");
+        {
+            using S = WingRemote::Settings;
+            expectEquals (S::cleanName ("Skati"), juce::String ("SKATI"));
+            expectEquals (S::networkName ("SKATI"), juce::String ("SKATI-mixer"));
+            expectEquals (S::cleanName ("  skati-mixer "), juce::String ("SKATI")); // typed with the suffix
+            expectEquals (S::cleanName ("SKATI-MIXER-mixer"), juce::String ("SKATI"));
+            expectEquals (S::networkName ("skati-Mixer"), juce::String ("SKATI-mixer"));
+            expectEquals (S::cleanName (""), juce::String ("SIDECAR"));
+            expectEquals (S::cleanName ("-mixer"), juce::String ("SIDECAR"));
+            expectEquals (S::cleanName ("FOH LEFT"), juce::String ("FOH LEFT"));
+            juce::TemporaryFile file (".settings");
+            juce::PropertiesFile::Options o;
+            o.applicationName = "nametest";
+            juce::PropertiesFile props (file.getFile(), o);
+            expectEquals (S::load (props).name, juce::String ("SIDECAR")); // the default
+            props.setValue (S::nameKey, "skati-mixer");
+            expectEquals (S::load (props).name, juce::String ("SKATI"));
         }
 
         beginTest ("The surface finish persists in the app settings");

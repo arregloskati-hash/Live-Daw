@@ -300,6 +300,30 @@ pub unsafe extern "C" fn ld_wing_clear_library(w: *mut LdWing) {
     }
 }
 
+/// The strip selected on the console (`kind` a StripKind, `id` its engine
+/// id; kind -1: none): clients read it as `/$ctl/$stat/selidx`, and the RTA
+/// (SOURCE SEL) follows it.
+#[no_mangle]
+pub unsafe extern "C" fn ld_wing_set_selected(w: *mut LdWing, kind: i32, id: i32) {
+    let Some(w) = wing(w) else { return };
+    let sel = livedaw_engine::StripKind::from_i32(kind).map(|k| (k, id));
+    guard((), || w.state.set_selected(sel));
+}
+
+/// The next strip a client selected (`selidx`): true with its kind and id.
+#[no_mangle]
+pub unsafe extern "C" fn ld_wing_take_select(w: *mut LdWing, kind: *mut i32, id: *mut i32) -> bool {
+    let Some(w) = wing(w) else { return false };
+    let Some((k, i)) = guard(None, || w.state.take_select_request()) else { return false };
+    if let Some(out) = kind.as_mut() {
+        *out = k as i32;
+    }
+    if let Some(out) = id.as_mut() {
+        *out = i;
+    }
+    true
+}
+
 /// The next scene recall a client asked for: true with `action` 1 GO (`index`
 /// the scene, 0-based), 2 GO NEXT, 3 GO PREV or 4 GO TAG (`index` the tag).
 #[no_mangle]
